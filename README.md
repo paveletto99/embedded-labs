@@ -1,5 +1,79 @@
 # Arel OS on esp32c3
 
+## Initial Rust environment setup (macOS)
+
+Install Apple's command-line tools and the native build prerequisites
+([Homebrew](https://brew.sh/) is required for the second command):
+
+```shell
+xcode-select --install
+brew install git ninja pkg-config
+```
+
+If Apple's command-line tools are already installed, skip the first command.
+Install Rust using [rustup](https://rustup.rs/), then open a new terminal or load
+the Cargo environment:
+
+```shell
+source "$HOME/.cargo/env"
+rustup update stable
+```
+
+From this project's root directory, select stable Rust and install the ESP32-C3
+target and command-line tools:
+
+```shell
+rustup override set stable
+rustup target add riscv32imc-unknown-none-elf
+cargo install laze --locked
+cargo install espflash --locked
+```
+
+Ariel OS v0.6.0 requires Rust **1.95 or newer**. Keep Cargo updated with Rust:
+this project's `.cargo/config.toml` includes Ariel's dependency patches and build
+profiles from `build/imports/ariel-os/ariel-os-cargo.toml`. The `include` key is
+[stable since Cargo 1.93](https://doc.rust-lang.org/cargo/reference/unstable.html#config-include),
+so a current stable toolchain works without copying patches into `Cargo.toml`
+or using nightly. The legacy `[unstable] config-include` entry in the config is
+not needed by current Cargo. Laze downloads the Ariel import on the first build;
+run laze before invoking Cargo directly on a fresh checkout.
+
+ESP32-C3 is a **RISC-V** chip: this project does not require the Xtensa toolchain
+installed by `espup`, or an ESP-IDF installation.
+
+Check the setup and compile without flashing:
+
+```shell
+rustc --version
+cargo --version
+rustup target list --installed
+ninja --version
+laze --version
+espflash --version
+laze build -b espressif-esp32-c3-lcdkit
+```
+
+Connect the Waveshare using a USB data cable, then build, flash, and monitor logs:
+
+```shell
+laze build -b espressif-esp32-c3-lcdkit run
+```
+
+If espflash asks, select the board's `/dev/cu.usbmodem...` port. Close other serial
+monitors before flashing. If the board will not enter download mode, hold BOOT,
+press and release RESET, then release BOOT and retry. Press Ctrl+C to exit the
+log monitor.
+
+Common setup errors:
+
+| Error | Fix |
+| --- | --- |
+| `launching ninja ... No such file or directory` | Install Ninja with `brew install ninja`. |
+| `can't find crate for core` | Install `riscv32imc-unknown-none-elf` for the active Rust toolchain. |
+| `embassy-nrf ... does not have feature optfield` | Check Rust/Cargo versions and that the Ariel config include exists and is loaded; run `rustup update stable`. |
+| `espflash: command not found` | Install espflash and ensure `$HOME/.cargo/bin` is in `PATH`. |
+| Serial port missing or busy | Check the USB data cable, port selection, and other serial monitors. |
+
 ## Hardware
 
 - [ESP32-C3-DEV-KIT-M-1](https://manuals.plus/asin/B0CKR4R5VM)
