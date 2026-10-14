@@ -1,3 +1,4 @@
 /target
+/tests/host/target
 /build
 .gdb_history

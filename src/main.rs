@@ -3,13 +3,17 @@
 
 mod lcd_display;
 mod lcd_framebuffer;
+mod prometheus_metrics;
+mod prometheus_server;
 mod scd40_display;
+mod scd40_sensor;
+mod sensor_state;
 
 use ariel_os::{
     gpio, hal,
     log::*,
-    reexports::{embassy_time::Delay, static_cell::StaticCell},
-    time::{Duration, Instant, Timer},
+    reexports::static_cell::StaticCell,
+    time::{Instant, Timer},
 };
 use embedded_graphics::{
     mono_font::{MonoTextStyle, ascii::FONT_6X10},
@@ -22,8 +26,9 @@ use lcd_display::{
     enable_lcd_backlight, flush_lcd_framebuffer, initialize_lcd_display, prepare_lcd_expander,
 };
 use lcd_framebuffer::{LCD_FRAME_BYTES, LcdFramebuffer};
-use scd4x::Scd4xAsync;
 use scd40_display::{draw_scd40_measurement, draw_scd40_status};
+use scd40_sensor::scd40_sensor_task;
+use sensor_state::{SCD40_STATE, Scd40Status};
 
 hal::define_peripherals!(Peripherals {
     lcd_sck: GPIO7,
@@ -105,64 +110,27 @@ async fn main(peripherals: Peripherals) {
     }
     info!("LCD: display initialized; showing text and RGB test bars");
 
-    // Reuse I2C0 after LCD control setup: SCD40 is 0x62, the LCD expander is 0x24.
-    // Allow power-up to settle before the first sensor command.
-    Timer::after_millis(30).await;
-    let mut sensor = Scd4xAsync::new(i2c, Delay);
-    let mut sensor_running = false;
-    let mut next_sensor_start = Instant::now();
+    // Hand I2C0 to the sensor task after all LCD expander operations are complete.
+    ariel_os::asynch::spawner()
+        .spawn(scd40_sensor_task(i2c))
+        .unwrap();
     let mut indicator_on = false;
     loop {
-        if !sensor_running && Instant::now() >= next_sensor_start {
-            // The sensor may still be measuring after an ESP32-only reset.
-            match sensor.stop_periodic_measurement().await {
-                Ok(()) => match sensor.start_periodic_measurement().await {
-                    Ok(()) => {
-                        sensor_running = true;
-                        info!("SCD40: periodic measurement started at I2C address 0x62");
-                        draw_scd40_status(&mut framebuffer, "SCD40: waiting...");
-                    }
-                    Err(_) => {
-                        error!("SCD40: start failed; retrying in 5 seconds");
-                        draw_scd40_status(&mut framebuffer, "SCD40: start failed");
-                    }
-                },
-                Err(_) => {
-                    error!("SCD40: connection failed; check power, GND, SCL=GPIO3, SDA=GPIO4");
-                    draw_scd40_status(&mut framebuffer, "SCD40: disconnected");
-                }
-            }
-            next_sensor_start = Instant::now() + Duration::from_secs(5);
-        }
-        if sensor_running {
-            match sensor.data_ready_status().await {
-                Ok(true) => match sensor.measurement().await {
-                    Ok(data) if data.co2 != 0 => {
-                        info!(
-                            "SCD40: CO2={} ppm, temperature={} C, humidity={} %RH",
-                            data.co2, data.temperature, data.humidity,
-                        );
-                        draw_scd40_measurement(&mut framebuffer, data);
-                    }
-                    Ok(_) => {
-                        warn!("SCD40: zero CO2 sample skipped");
-                        draw_scd40_status(&mut framebuffer, "SCD40: waiting...");
-                    }
-                    Err(_) => {
-                        warn!("SCD40: measurement read or CRC check failed; retrying");
-                        draw_scd40_status(&mut framebuffer, "SCD40: read failed");
-                    }
-                },
-                Ok(false) => {}
-                Err(_) => {
-                    warn!("SCD40: data-ready check failed; reconnecting in 5 seconds");
-                    draw_scd40_status(&mut framebuffer, "SCD40: disconnected");
-                    sensor_running = false;
-                    next_sensor_start = Instant::now() + Duration::from_secs(5);
-                }
-            }
-        }
         Timer::after_secs(1).await;
+        // Copy a consistent snapshot, then release the mutex before drawing or flushing SPI.
+        let snapshot = *SCD40_STATE.lock().await;
+        if let Some(data) = snapshot.fresh_measurement(Instant::now().as_millis()) {
+            draw_scd40_measurement(&mut framebuffer, data);
+        } else {
+            let status = match snapshot.status {
+                Scd40Status::Starting => "SCD40: starting...",
+                Scd40Status::Waiting => "SCD40: waiting...",
+                Scd40Status::Ready { .. } => "SCD40: stale data",
+                Scd40Status::Disconnected => "SCD40: disconnected",
+                Scd40Status::ReadFailed => "SCD40: read failed",
+            };
+            draw_scd40_status(&mut framebuffer, status);
+        }
         indicator_on = !indicator_on;
         let color = if indicator_on {
             Rgb565::CYAN

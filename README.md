@@ -81,6 +81,90 @@ Common setup errors:
 - [Waveshare ESP32-C3-LCD-1.47](https://docs.waveshare.com/ESP32-C3-LCD-1.47), with the onboard LCD
 - [Sensirion SCD40](https://sensirion.com/products/catalog/SCD40), for CO₂, temperature, and humidity
 
+## Wi-Fi Prometheus exporter and shared sensor state
+
+Three Ariel OS tasks run on the system executor:
+
+- `scd40_sensor_task` owns I2C0 after LCD setup and publishes sensor readings/status.
+- The LCD task copies the latest sensor state once per second and renders it.
+- `prometheus_metrics_task` serves `GET /metrics` on TCP port **9100** over Wi-Fi.
+
+`SCD40_STATE` in `src/sensor_state.rs` is an Embassy async
+`Mutex<CriticalSectionRawMutex, Scd40State>`. Each reader copies a complete snapshot
+while locked, then releases the guard before formatting, drawing, or network I/O.
+The sensor task performs I²C operations before acquiring the state mutex. Slow
+scrapes and Wi-Fi reconnection therefore do not hold up sensor acquisition or LCD
+refresh. LCD setup must succeed before the sensor task receives I2C0; if it fails,
+the exporter still runs and reports `scd40_up 0`.
+
+The laze configuration enables `network` and `wifi-esp`, with IPv4 DHCP. Ariel OS
+handles Wi-Fi association, reconnection, and the network stack. Wi-Fi credentials
+are supplied at **build time** through `CONFIG_WIFI_NETWORK` and
+`CONFIG_WIFI_PASSWORD`, following [Ariel OS's networking setup](https://github.com/ariel-os/ariel-os/blob/v0.6.0/book/src/networking.md).
+They are embedded in the firmware; keep them out of tracked configuration files.
+In zsh, prompt for the values without echoing the password, then build/flash:
+
+```zsh
+read 'CONFIG_WIFI_NETWORK?Wi-Fi SSID: '
+read -s 'CONFIG_WIFI_PASSWORD?Wi-Fi password: '
+export CONFIG_WIFI_NETWORK CONFIG_WIFI_PASSWORD
+laze build -b espressif-esp32-c3-lcdkit run
+unset CONFIG_WIFI_NETWORK CONFIG_WIFI_PASSWORD
+```
+
+For a build without flashing, omit `run`. Export these variables again for later
+firmware builds. The firmware logs its DHCP address as:
+
+```text
+Metrics: listening at http://<board-ip>:9100/metrics
+```
+
+From a computer on the same reachable network:
+
+```shell
+curl http://<board-ip>:9100/metrics
+```
+
+The response follows [Prometheus text exposition format 0.0.4](https://prometheus.io/docs/instrumenting/exposition_formats/),
+with `HELP`/`TYPE` metadata, newline-terminated samples, and
+`Content-Type: text/plain; version=0.0.4; charset=utf-8`.
+
+| Metric | Meaning |
+| --- | --- |
+| `scd40_up` | 1 when a validated sample is less than 15 seconds old; otherwise 0 |
+| `scd40_co2_ppm` | CO₂ concentration in ppm |
+| `scd40_temperature_celsius` | Temperature in °C |
+| `scd40_relative_humidity_ratio` | Relative humidity from 0 to 1 (37% RH is 0.37) |
+| `scd40_sample_age_seconds` | Age of the current validated sample, including when stale |
+| `scd40_measurements_total` | Valid measurements since boot |
+| `scd40_read_errors_total` | Failed sensor operations or invalid samples since boot |
+
+Measurement gauges are omitted until the first valid reading, after a sensor
+error, and when a sample reaches 15 seconds old. Age is available while a stored
+sample exists; counters survive sensor reconnects and reset on device reboot.
+Each scrape takes one coherent snapshot. The server handles one connection at a
+time, bounds request headers to 1024 bytes, and applies a five-second header
+deadline and a ten-second total connection deadline. It closes each connection
+after the response; other paths/methods receive 404/405.
+
+Example Prometheus configuration (replace the target with the board's address):
+
+```yaml
+scrape_configs:
+  - job_name: embedded-labs
+    scrape_interval: 5s
+    scrape_timeout: 4s
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['<board-ip>:9100']
+```
+
+Run host regression tests for state freshness, metrics/HTTP framing, and graphics:
+
+```shell
+CARGO_TARGET_DIR=target/host-tests cargo test --manifest-path tests/host/Cargo.toml
+```
+
 ## SCD40 sensor wiring and readings
 
 Connect the sensor module to the board as follows. `03` and `04` mean GPIO3 and

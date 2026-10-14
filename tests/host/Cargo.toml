@@ -1,0 +1,16 @@
+[package]
+name = "embedded-labs-host-tests"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+embedded-graphics = "=0.8.2"
+heapless = "=0.9.2"
+scd4x = "=0.5.0"
+embassy-sync = "=0.7.2"
+
+[workspace]

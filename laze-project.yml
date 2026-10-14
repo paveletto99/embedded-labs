@@ -5,3 +5,10 @@ imports:
     dldir: ariel-os
 apps:
   - name: embedded-labs
+    selects:
+      - network
+      - wifi-esp
+    env:
+      global:
+        executor_stacksize_required:
+          - "16384"
