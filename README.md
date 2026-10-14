@@ -5,6 +5,48 @@
 - [ESP32-C3-DEV-KIT-M-1](https://manuals.plus/asin/B0CKR4R5VM)
 - [BME280](https://www.bosch-sensortec.com/products/environmental-sensors/pressure-sensors/bme280/)
 - [Waveshare ESP32-C3-LCD-1.47](https://docs.waveshare.com/ESP32-C3-LCD-1.47), with the onboard LCD
+- [Sensirion SCD40](https://sensirion.com/products/catalog/SCD40), for CO₂, temperature, and humidity
+
+## SCD40 sensor wiring and readings
+
+Connect the sensor module to the board as follows. `03` and `04` mean GPIO3 and
+GPIO4, rather than physical header positions.
+
+| SCD40 connection | ESP32-C3 board connection |
+| --- | --- |
+| GND / GRND | GND |
+| SCL | GPIO3 (`03`) |
+| SDA | GPIO4 (`04`) |
+| VDD / VCC | 3.3 V, if supported by your sensor breakout |
+
+The SCD40 chip supports 3.3 V operation, with peak current up to 205 mA. Check
+the breakout's input-voltage requirements and the available 3.3 V supply capacity.
+Keep SDA/SCL pull-ups at 3.3 V for the ESP32-C3; use external pull-ups if the board
+and sensor module do not already provide them. Supply and I²C requirements are
+specified in the [Sensirion datasheet](https://sensirion.com/media/documents/48C4B7FB/67FE0194/CD_DS_SCD4x_Datasheet_D1.pdf).
+
+GPIO3/GPIO4 already connect to the LCD I²C expander. The application initializes
+**one I2C0 bus at 100 kHz** and uses it for both devices: the LCD expander at
+`0x24` and the SCD40 at `0x62`. It initializes the LCD control lines and backlight
+first, then gives the same bus to the `scd4x` async driver for sensor reads.
+
+At startup, the application stops any previous periodic measurement before
+starting a new one, so an ESP32 reset also works when the sensor remains powered.
+The sensor produces a new measurement about every five seconds. The application
+checks data-ready status before reading and uses the driver's CRC validation.
+Valid nonzero CO₂ samples appear in the logs and in the lower part of the LCD:
+
+```text
+SCD40: CO2=500 ppm, temperature=25 C, humidity=37 %RH
+```
+
+The LCD shows waiting, disconnected, or read-failed status instead of stale data
+when appropriate. Connection/start failures retry after five seconds while the
+LCD demo continues. Build/flash with the existing command:
+
+```shell
+laze build -b espressif-esp32-c3-lcdkit run
+```
 
 ## Rust LCD graphics
 
